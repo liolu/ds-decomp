@@ -2,9 +2,10 @@ use std::backtrace::Backtrace;
 
 use ds_rom::rom::{Arm9, Autoload, raw::RawBuildInfoError};
 use snafu::Snafu;
-use unarm::args::Argument;
 
-use super::functions::{Function, FunctionAnalysisError, FunctionParseOptions, ParseFunctionError};
+use super::functions::{
+    Function, FunctionAnalysisError, FunctionParseOptions, ParseFunctionError, ParseFunctionOptions,
+};
 use crate::{analysis::functions::IntoFunctionError, config::module::ModuleKind};
 
 #[derive(Debug)]
@@ -31,28 +32,13 @@ pub enum CtorRangeError {
         ".ctor runner at {address:#010x} not in range of module '{module_kind}:\n{backtrace}'"
     ))]
     CtorRunnerNotInRange { address: u32, module_kind: ModuleKind, backtrace: Backtrace },
+    #[snafu(display(
+        ".ctor list at {address:#010x} read by the runner at {runner:#010x} is not in the ARM9 main module:\n{backtrace}"
+    ))]
+    CtorListOutsideArm9 { address: u32, runner: u32, backtrace: Backtrace },
 }
 
 impl CtorRange {
-    fn find_last_function_call(
-        function: &Function,
-        module_code: &[u8],
-        base_address: u32,
-    ) -> Option<u32> {
-        let mut last_called_function = None;
-        for (address, _ins, parsed_ins) in function.parser(module_code, base_address) {
-            if !parsed_ins.mnemonic.starts_with("bl") {
-                continue;
-            }
-            let Argument::BranchDest(offset) = parsed_ins.args[0] else {
-                continue;
-            };
-            let dest = (address as i32 + offset) as u32;
-            last_called_function = Some(dest);
-        }
-        last_called_function
-    }
-
     pub fn find_in_arm9(
         arm9: &Arm9,
         unknown_autoloads: &[&Autoload],
@@ -84,9 +70,39 @@ impl CtorRange {
             Err(e) => return Err(e.into()),
         };
 
-        let run_inits_addr = Self::find_last_function_call(&entry_func, entry_code, entry_addr)
-            .ok_or_else(|| NoEntryFunctionCallsSnafu.build())?;
+        // The .ctor runner is normally the last function the entrypoint calls. In SDK 5 (DSi-enhanced games) the last
+        // call runs the static initializer lists of the autoloads, which crt0 copied to a table in DTCM, and the
+        // runner of the ARM9 .ctor (__call_static_initializers, in Thumb) comes just before it. So the calls are
+        // tried from the last one: the first whose list is inside the ARM9 main module wins.
+        let calls: Vec<(u32, bool)> = entry_func
+            .function_calls()
+            .values()
+            .map(|call| (call.address, call.thumb))
+            .collect();
+        if calls.is_empty() {
+            return NoEntryFunctionCallsSnafu.fail();
+        }
+        let mut first_error = None;
+        for &(run_inits_addr, thumb) in calls.iter().rev() {
+            match Self::from_runner(arm9, unknown_autoloads, run_inits_addr, thumb) {
+                Ok(range) => return Ok(range),
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
+                }
+            }
+        }
+        Err(first_error.unwrap())
+    }
 
+    fn from_runner(
+        arm9: &Arm9,
+        unknown_autoloads: &[&Autoload],
+        run_inits_addr: u32,
+        thumb: bool,
+    ) -> Result<Self, CtorRangeError> {
+        let code = arm9.code()?;
         let run_inits_offset = (run_inits_addr - arm9.base_address()) as usize;
         let (run_inits_module_start, run_inits_module_end, run_inits_code) =
             if run_inits_offset < code.len() {
@@ -127,7 +143,7 @@ impl CtorRange {
             existing_functions: None,
             dsprot_encrypted_ranges: &[],
             check_defs_uses: false,
-            parse_options: Default::default(),
+            parse_options: ParseFunctionOptions { thumb: Some(thumb) },
         });
         let run_inits_func = match parse_result {
             Ok(function) => function,
@@ -151,6 +167,9 @@ impl CtorRange {
             ctor_start_data[3],
         ]);
 
+        if ctor_start < arm9.base_address() || ctor_start - arm9.base_address() >= code.len() as u32 {
+            return CtorListOutsideArm9Snafu { address: ctor_start, runner: run_inits_addr }.fail();
+        }
         let num_ctors = code[(ctor_start - arm9.base_address()) as usize..]
             .as_chunks::<4>()
             .0

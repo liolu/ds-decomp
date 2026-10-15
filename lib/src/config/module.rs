@@ -1089,9 +1089,15 @@ impl Module {
             text_end
         };
 
-        // .rodata
-        let rodata_start = rodata_start.unwrap_or(text_exceptix_end);
-        self.add_rodata_section(rodata_start, ctor.start)?;
+        // .rodata: between .init and .ctor in NITRO SDK games. In SDK 5 (DSi-enhanced games) it comes before .init
+        // instead (.text, .exception, .exceptix, .rodata, .init, .ctor): .init then ends where .ctor starts and the
+        // gap between .exceptix and .init is the .rodata.
+        if rodata_start == Some(ctor.start) && text_exceptix_end < read_only_end {
+            self.add_rodata_section(text_exceptix_end, read_only_end)?;
+        } else {
+            let rodata_start = rodata_start.unwrap_or(text_exceptix_end);
+            self.add_rodata_section(rodata_start, ctor.start)?;
+        }
 
         // .data and .bss
         let data_start = ctor.end.next_multiple_of(32);

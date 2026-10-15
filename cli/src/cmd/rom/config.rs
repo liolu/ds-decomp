@@ -119,6 +119,7 @@ impl ConfigRom {
             path_order,
             arm9_hmac_sha1_key,
             multiboot_signature,
+            dsi,
 
             // These files will be remade
             arm9_bin: _,
@@ -149,6 +150,14 @@ impl ConfigRom {
         if let Some(multiboot_signature) = multiboot_signature {
             rom_paths.multiboot_signature =
                 Some(Self::make_path(old.join(multiboot_signature), new));
+        }
+        // DSi area of DSi-enhanced ROMs: its programs and filler are not rebuilt by dsd, they stay in the extract
+        if let Some(dsi) = dsi.as_mut() {
+            dsi.arm9i_bin = Self::make_path(old.join(&dsi.arm9i_bin), new);
+            dsi.arm9i_config = Self::make_path(old.join(&dsi.arm9i_config), new);
+            dsi.arm7i_bin = Self::make_path(old.join(&dsi.arm7i_bin), new);
+            dsi.arm7i_config = Self::make_path(old.join(&dsi.arm7i_config), new);
+            dsi.region_padding = Self::make_path(old.join(&dsi.region_padding), new);
         }
     }
 
@@ -381,6 +390,7 @@ impl ConfigRom {
             },
             encrypted: rom.arm9().originally_encrypted(),
             compressed: rom.arm9().originally_compressed(),
+            footer: rom.arm9().has_footer(),
             build_info: ds_rom::rom::BuildInfo {
                 bss_start: bss_range.start,
                 bss_end: bss_range.end,
