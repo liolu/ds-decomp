@@ -252,6 +252,36 @@ impl<'a> Delinker<'a> {
     }
 }
 
+const EXCEPTIX_ENTRY_SIZE: usize = 12;
+
+/// The linker sorts the exception table (.exceptix) by function address and puts entries with the same address (functions
+/// of overlays loaded at the same address) in reverse order. So these entries are written in reverse order, to get back
+/// the original order after linking. Returns the new offset of each entry, or `None` if no entry needs to move.
+fn exceptix_entry_order(code: &[u8]) -> Option<Vec<u32>> {
+    if code.len() % EXCEPTIX_ENTRY_SIZE != 0 {
+        return None;
+    }
+    let addresses = code
+        .chunks_exact(EXCEPTIX_ENTRY_SIZE)
+        .map(|entry| u32::from_le_bytes(entry[0..4].try_into().unwrap()))
+        .collect::<Vec<_>>();
+    let mut order = (0..addresses.len()).collect::<Vec<_>>();
+    let mut moved = false;
+    let mut start = 0;
+    while start < addresses.len() {
+        let mut end = start + 1;
+        while end < addresses.len() && addresses[end] == addresses[start] {
+            end += 1;
+        }
+        if end - start > 1 {
+            order[start..end].reverse();
+            moved = true;
+        }
+        start = end;
+    }
+    moved.then(|| order.into_iter().map(|index| (index * EXCEPTIX_ENTRY_SIZE) as u32).collect())
+}
+
 struct DelinkObject<'a> {
     object: object::write::Object<'a>,
     // Maps address to ObjSection
@@ -261,6 +291,8 @@ struct DelinkObject<'a> {
     // Maps overlay ID to ObjSymbol
     overlay_id_symbols: BTreeMap<u32, object::write::SymbolId>,
     link_time_const_symbols: BTreeMap<LinkTimeConst, object::write::SymbolId>,
+    // Maps .exceptix section address to the new offset of each entry, see `exceptix_entry_order`
+    exceptix_orders: BTreeMap<u32, Vec<u32>>,
 
     program: &'a Program,
     current_module: ModuleKind,
@@ -278,6 +310,7 @@ impl<'a> DelinkObject<'a> {
             obj_symbols: BTreeMap::new(),
             overlay_id_symbols: BTreeMap::new(),
             link_time_const_symbols: BTreeMap::new(),
+            exceptix_orders: BTreeMap::new(),
             program,
             current_module,
         }
@@ -297,10 +330,38 @@ impl<'a> DelinkObject<'a> {
             };
         let module = self.program.by_module_kind(symbol_module).unwrap();
 
-        let code = file_section
+        let mut code = file_section
             .relocatable_code(module)
             .with_context(|| format!("when delinking module {}", self.current_module))?
             .unwrap_or_else(Vec::new);
+        // The order comes from the original bytes, the relocatable code has the function addresses zeroed
+        let exceptix_order = if file_section.name() == ".exceptix" {
+            file_section.code_from_module(module)?.and_then(exceptix_entry_order)
+        } else {
+            None
+        };
+        if let Some(order) = &exceptix_order {
+            let mut reordered = code.clone();
+            for (old_index, &new_offset) in order.iter().enumerate() {
+                let old_offset = old_index * EXCEPTIX_ENTRY_SIZE;
+                let new_offset = new_offset as usize;
+                reordered[new_offset..new_offset + EXCEPTIX_ENTRY_SIZE]
+                    .copy_from_slice(&code[old_offset..old_offset + EXCEPTIX_ENTRY_SIZE]);
+            }
+            code = reordered;
+        }
+        let map_offset = |offset: u32| -> u32 {
+            match &exceptix_order {
+                Some(order) => {
+                    let index = offset as usize / EXCEPTIX_ENTRY_SIZE;
+                    match order.get(index) {
+                        Some(&new_offset) => new_offset + offset % EXCEPTIX_ENTRY_SIZE as u32,
+                        None => offset,
+                    }
+                }
+                None => offset,
+            }
+        };
         let name = file_section.source_name().as_bytes().to_vec();
         let kind = match file_section.kind() {
             SectionKind::Code => object::SectionKind::Text,
@@ -336,7 +397,7 @@ impl<'a> DelinkObject<'a> {
             // Get symbol data
             let max_address = symbols.peek().map_or(file_section.end_address(), |(_, s)| s.addr);
             let scope = symbol.get_obj_symbol_scope();
-            let value = u64::from(symbol.addr - file_section.start_address());
+            let value = u64::from(map_offset(symbol.addr - file_section.start_address()));
             let flags = symbol.get_obj_symbol_flags();
 
             // Create symbol
@@ -358,7 +419,14 @@ impl<'a> DelinkObject<'a> {
                     | SymbolKind::Label(SymLabel { mode: InstructionMode::Thumb, .. })
             );
             let thumb_bit = if is_thumb { 1 } else { 0 };
-            self.obj_symbols.insert((symbol.addr | thumb_bit, symbol_module), symbol_id);
+            let key = (symbol.addr | thumb_bit, symbol_module);
+            let is_code_symbol =
+                matches!(symbol.kind, SymbolKind::Function(_) | SymbolKind::Label(_));
+            // A data symbol at a Thumb function's address + 1 (from a pointer to that function) must not replace the
+            // function, or calls to the function would point one byte too far
+            if is_code_symbol || !self.obj_symbols.contains_key(&key) {
+                self.obj_symbols.insert(key, symbol_id);
+            }
 
             if all_mapping_symbols
                 || matches!(
@@ -379,9 +447,38 @@ impl<'a> DelinkObject<'a> {
                         flags: object::SymbolFlags::None,
                     });
                 }
+
+                // A code symbol in a data section (e.g. an unknown function symbol): switch back to data after it,
+                // otherwise the linker treats the rest of the section as code and adds interworking veneers for
+                // pointers to Thumb functions in it
+                let in_data_section = !file_section.kind().is_executable();
+                let is_code_symbol =
+                    matches!(symbol.kind, SymbolKind::Function(_) | SymbolKind::Label(_));
+                let next_is_code_symbol = symbols.peek().is_some_and(|(_, s)| {
+                    matches!(s.kind, SymbolKind::Function(_) | SymbolKind::Label(_))
+                });
+                if in_data_section
+                    && is_code_symbol
+                    && !next_is_code_symbol
+                    && max_address < file_section.end_address()
+                {
+                    self.object.add_symbol(object::write::Symbol {
+                        name: b"$d".to_vec(),
+                        value: u64::from(max_address - file_section.start_address()),
+                        size: 0,
+                        kind: object::SymbolKind::Label,
+                        scope: object::SymbolScope::Compilation,
+                        weak: false,
+                        section: symbol_section,
+                        flags: object::SymbolFlags::None,
+                    });
+                }
             }
         }
         self.obj_sections.insert(file_section.start_address(), obj_section_id);
+        if let Some(order) = exceptix_order {
+            self.exceptix_orders.insert(file_section.start_address(), order);
+        }
         Ok(())
     }
 
@@ -410,7 +507,13 @@ impl<'a> DelinkObject<'a> {
         let module = self.program.by_module_kind(module_kind).unwrap();
         for (_, relocation) in module.relocations().iter_range(file_section.address_range()) {
             // Get relocation data
-            let offset = relocation.from_address() - file_section.start_address();
+            let mut offset = relocation.from_address() - file_section.start_address();
+            if let Some(order) = self.exceptix_orders.get(&file_section.start_address()) {
+                let index = offset as usize / EXCEPTIX_ENTRY_SIZE;
+                if let Some(&new_offset) = order.get(index) {
+                    offset = new_offset + offset % EXCEPTIX_ENTRY_SIZE as u32;
+                }
+            }
             let dest_addr = relocation.to_address();
 
             let symbol_id = match relocation.kind() {

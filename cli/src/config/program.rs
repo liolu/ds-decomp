@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use ds_decomp::config::{
     config::Config,
     module::{AnalysisOptions, Module, ModuleKind},
+    relocations::RelocationModule,
     section::SectionKind,
     symbol::{SymBss, SymData, SymbolMap, SymbolMaps},
 };
@@ -154,6 +155,54 @@ impl Program {
                             }
                         }
                     }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The exception table (.exceptix) can have entries for functions of several overlays that share an address, so
+    /// their relocations are ambiguous. The function length in each entry tells which overlay it is for, and the
+    /// linker needs the right one to sort the table like the original.
+    pub fn resolve_exception_table_overlays(&mut self) -> Result<()> {
+        for module_index in 0..self.modules.len() {
+            let module = &self.modules[module_index];
+            let Some((_, exceptix)) = module.sections().by_name(".exceptix") else { continue };
+            let range = exceptix.start_address()..exceptix.end_address();
+            let base_address = module.base_address();
+            let code = module.code();
+            let word = |address: u32| -> Option<u32> {
+                let offset = (address - base_address) as usize;
+                code.get(offset..offset + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            };
+
+            let mut resolved = Vec::new();
+            for (&from, relocation) in module.relocations().iter_range(range.clone()) {
+                if (from - range.start) % 12 != 0 {
+                    continue;
+                }
+                let RelocationModule::Overlays { ids } = relocation.module() else { continue };
+                let Some(length) = word(from + 4) else { continue };
+                let size = length & !1;
+                let to = relocation.to_address();
+                let candidates = ids
+                    .iter()
+                    .filter(|&&id| {
+                        let symbol_map = self.symbol_maps.get(ModuleKind::Overlay(id));
+                        symbol_map
+                            .and_then(|map| map.get_function(to).ok().flatten())
+                            .is_some_and(|(function, _)| function.size == size)
+                    })
+                    .collect::<Vec<_>>();
+                if let &[&id] = candidates.as_slice() {
+                    resolved.push((from, id));
+                }
+            }
+
+            let relocations = self.modules[module_index].relocations_mut();
+            for (from, id) in resolved {
+                if let Some(relocation) = relocations.get_mut(from) {
+                    relocation.set_module(RelocationModule::Overlay { id });
                 }
             }
         }

@@ -1069,18 +1069,25 @@ impl Module {
             for (i, entry) in exception_data.exception_table.iter().enumerate() {
                 let address = exception_data.exceptix_start
                     + (i * std::mem::size_of::<ExceptionTableEntry>()) as u32;
-                symbol_map.add_data(
-                    Some(format!("@EX@{:08x}", entry.function_address)),
-                    address,
-                    SymData::Word { count: Some(3) },
-                )?;
+                // The table can have entries for functions of overlays that share an address, so names get the
+                // symbol address as suffix when already taken (global symbols must be unique when linking)
+                let unique_name = |symbol_map: &SymbolMap, name: String, address: u32| {
+                    if symbol_map.for_name(&name).is_some() {
+                        format!("{name}_{address:08x}")
+                    } else {
+                        name
+                    }
+                };
+                let name = unique_name(symbol_map, format!("@EX@{:08x}", entry.function_address), address);
+                symbol_map.add_data(Some(name), address, SymData::Word { count: Some(3) })?;
 
                 if (entry.function_length & 1) == 0 {
-                    symbol_map.add_data(
-                        Some(format!("@ET@{:08x}", entry.function_address)),
+                    let name = unique_name(
+                        symbol_map,
+                        format!("@ET@{:08x}", entry.function_address),
                         entry.exception_record,
-                        SymData::Any,
-                    )?;
+                    );
+                    symbol_map.add_data(Some(name), entry.exception_record, SymData::Any)?;
                 }
             }
 
@@ -1198,6 +1205,13 @@ impl Module {
     }
 
     fn find_sections_itcm(&mut self, symbol_map: &mut SymbolMap) -> Result<(), ModuleError> {
+        if self.code.is_empty() {
+            // Some games have an empty ITCM autoload (no code at all), give it a (possibly empty) .bss section so the
+            // module still has a section
+            self.add_bss_section(self.base_address)?;
+            return Ok(());
+        }
+
         let mut text_functions = self
             .find_functions(
                 symbol_map,
@@ -1415,11 +1429,12 @@ impl Module {
         options: &AnalysisOptions,
     ) -> Result<(), ModuleError> {
         if let Some(bss_variable) = dsprot_result.bss_variable {
+            let name = dsprot_bss_symbol_name(self.kind);
             if symbol_map.by_address(bss_variable)?.is_some() {
-                symbol_map.rename_by_address(bss_variable, DSPROT_BSS_SYMBOL_NAME)?;
+                symbol_map.rename_by_address(bss_variable, &name)?;
             } else {
                 symbol_map.add(Symbol {
-                    name: DSPROT_BSS_SYMBOL_NAME.to_string(),
+                    name,
                     kind: SymbolKind::Bss(SymBss { size: None }),
                     addr: bss_variable,
                     ambiguous: false,
@@ -1449,14 +1464,18 @@ impl Module {
             );
 
             // Add relocation and destination symbol
-            let (_, section) =
-                self.sections.get_by_contained_address(relocation.to_address).ok_or_else(|| {
-                    InvalidDsProtRelocSnafu {
-                        from: relocation.from_address,
-                        to: relocation.to_address,
-                    }
-                    .build()
-                })?;
+            let Some((_, section)) = self.sections.get_by_contained_address(relocation.to_address)
+            else {
+                // The destination is in another module (e.g. an overlay's DS Protect code pointing to a main
+                // module function). Keep the raw value, the bytes are unchanged without a relocation.
+                log::warn!(
+                    "The DS Protect relocation from {:#010x} points to {:#010x} which is outside of {}, keeping the raw value",
+                    relocation.from_address,
+                    relocation.to_address,
+                    self.kind
+                );
+                continue;
+            };
             let symbol_name = format!("{}{:08x}", self.default_data_prefix, relocation.to_address);
             match section.kind() {
                 SectionKind::Code => {}
@@ -1586,6 +1605,15 @@ pub struct AnalysisOptions {
 }
 
 pub const DSPROT_BSS_SYMBOL_NAME: &str = "DSProt_BSS";
+
+/// Name of the DS Protect BSS variable of a module. Overlays get their ID as suffix, as several overlays can have DS
+/// Protect and global symbols must be unique when linking.
+pub fn dsprot_bss_symbol_name(kind: ModuleKind) -> String {
+    match kind {
+        ModuleKind::Overlay(id) => format!("{DSPROT_BSS_SYMBOL_NAME}_ov{id:03}"),
+        _ => DSPROT_BSS_SYMBOL_NAME.to_string(),
+    }
+}
 
 fn create_overriden_function_sizes(dsprot_result: &DsProtDecryptResult) -> BTreeMap<u32, u32> {
     dsprot_result

@@ -100,6 +100,12 @@ fn add_function_calls_as_relocations(
     let AnalyzeExternalReferencesOptions { modules, module_index, symbol_maps } = options;
 
     for (&address, &called_function) in iter_function_calls(function) {
+        if function.is_thumb() && called_function.ins.mnemonic() == "b" {
+            // There is no relocation kind for a Thumb B (an ARM branch relocation would rewrite it as an ARM
+            // instruction), and it can only reach nearby code anyway, so keep the original instruction
+            continue;
+        }
+
         let local_module = &modules[*module_index];
         let is_local =
             local_module.sections().get_by_contained_address(called_function.address).is_some();

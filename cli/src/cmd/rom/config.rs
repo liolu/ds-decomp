@@ -10,6 +10,7 @@ use ds_decomp::config::{
     delinks::Delinks,
     module::{
         AUTOLOAD_CALLBACK_SYMBOL_NAME, BUILD_INFO_SYMBOL_NAME, DSPROT_BSS_SYMBOL_NAME, ModuleKind,
+        dsprot_bss_symbol_name,
         OVERLAY_SIGNATURES_SYMBOL_NAME,
     },
     section::{Section, Sections},
@@ -235,6 +236,7 @@ impl ConfigRom {
                 rom_overlay.dsprot_state().as_option(),
                 object_cache,
                 symbol_map,
+                ModuleKind::Overlay(overlay.id),
             )?;
 
             overlay_configs.push(OverlayConfig { info, signed: overlay.signed, file_name, dsprot });
@@ -400,6 +402,7 @@ impl ConfigRom {
                 rom.arm9().dsprot_state().as_option(),
                 object_cache,
                 symbol_map,
+                ModuleKind::Arm9,
             )?,
         };
 
@@ -467,11 +470,16 @@ fn create_dsprot_state(
     dsprot_info: Option<&DsProtDecryptResult>,
     object_cache: &ObjectCache,
     symbol_map: &SymbolMap,
+    module_kind: ModuleKind,
 ) -> Result<DsProtState> {
     let Some(dsprot_info) = dsprot_info else {
         return Ok(DsProtState::None);
     };
-    let bss_variable = symbol_map.by_name(DSPROT_BSS_SYMBOL_NAME)?.map(|(_, sym)| sym.addr);
+    // Overlays initialized before per-module names have the plain name
+    let bss_variable = match symbol_map.by_name(&dsprot_bss_symbol_name(module_kind))? {
+        Some((_, sym)) => Some(sym.addr),
+        None => symbol_map.by_name(DSPROT_BSS_SYMBOL_NAME)?.map(|(_, sym)| sym.addr),
+    };
     let encrypted_ranges = symbol_map
         .functions()
         .map(|(func, sym)| {

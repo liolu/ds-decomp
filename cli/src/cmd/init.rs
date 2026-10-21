@@ -110,6 +110,7 @@ impl Init {
         let mut program = Program::new(main, overlays, autoloads, symbol_maps);
         if !self.skip_reloc_analysis {
             program.analyze_cross_references(&analysis_options)?;
+            program.resolve_exception_table_overlays()?;
         }
 
         // Generate configs
