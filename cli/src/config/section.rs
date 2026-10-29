@@ -65,7 +65,12 @@ impl SectionExt for Section {
                     &[0x00, 0x00, 0x00, 0x00]
                 }
             };
+            // A conditional ARM branch (`bmi` into another function) keeps its condition: only the offset is the addend
+            let cond = code[offset + 3] & 0xf0;
             code[offset..offset + 4].copy_from_slice(ins);
+            if matches!(relocation.kind(), RelocationKind::ArmBranch) && cond != 0xf0 {
+                code[offset + 3] = cond | (code[offset + 3] & 0x0f);
+            }
         }
 
         Ok(Some(code))
