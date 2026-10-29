@@ -475,6 +475,35 @@ impl<'a> DelinkObject<'a> {
                 }
             }
         }
+        // Inline tables of hand-written assembly functions (skipped data inside code): mark them with $d, and $a
+        // after them, or objdiff disassembles them as instructions while the compiled object marks them as data
+        if file_section.kind().is_executable() {
+            for (_, symbol) in search_symbol_map.iter_by_address(file_section.address_range()) {
+                let SymbolKind::Data(data) = symbol.kind else { continue };
+                if !symbol.skip {
+                    continue;
+                }
+                let start = symbol.addr - file_section.start_address();
+                let mut marks = vec![(b"$d".to_vec(), start)];
+                if let Some(size) = data.size()
+                    && symbol.addr + size < file_section.end_address()
+                {
+                    marks.push((b"$a".to_vec(), start + size));
+                }
+                for (name, offset) in marks {
+                    self.object.add_symbol(object::write::Symbol {
+                        name,
+                        value: u64::from(map_offset(offset)),
+                        size: 0,
+                        kind: object::SymbolKind::Label,
+                        scope: object::SymbolScope::Compilation,
+                        weak: false,
+                        section: object::write::SymbolSection::Section(obj_section_id),
+                        flags: object::SymbolFlags::None,
+                    });
+                }
+            }
+        }
         self.obj_sections.insert(file_section.start_address(), obj_section_id);
         if let Some(order) = exceptix_order {
             self.exceptix_orders.insert(file_section.start_address(), order);
