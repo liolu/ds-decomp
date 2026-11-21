@@ -1078,7 +1078,8 @@ impl Module {
                         name
                     }
                 };
-                let name = unique_name(symbol_map, format!("@EX@{:08x}", entry.function_address), address);
+                let name =
+                    unique_name(symbol_map, format!("@EX@{:08x}", entry.function_address), address);
                 symbol_map.add_data(Some(name), address, SymData::Word { count: Some(3) })?;
 
                 if (entry.function_length & 1) == 0 {

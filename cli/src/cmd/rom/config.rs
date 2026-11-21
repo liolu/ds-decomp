@@ -10,8 +10,7 @@ use ds_decomp::config::{
     delinks::Delinks,
     module::{
         AUTOLOAD_CALLBACK_SYMBOL_NAME, BUILD_INFO_SYMBOL_NAME, DSPROT_BSS_SYMBOL_NAME, ModuleKind,
-        dsprot_bss_symbol_name,
-        OVERLAY_SIGNATURES_SYMBOL_NAME,
+        OVERLAY_SIGNATURES_SYMBOL_NAME, dsprot_bss_symbol_name,
     },
     section::{Section, Sections},
     symbol::{SymbolMap, SymbolMaps},

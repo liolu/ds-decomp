@@ -258,11 +258,12 @@ const EXCEPTIX_ENTRY_SIZE: usize = 12;
 /// of overlays loaded at the same address) in reverse order. So these entries are written in reverse order, to get back
 /// the original order after linking. Returns the new offset of each entry, or `None` if no entry needs to move.
 fn exceptix_entry_order(code: &[u8]) -> Option<Vec<u32>> {
-    if code.len() % EXCEPTIX_ENTRY_SIZE != 0 {
+    if !code.len().is_multiple_of(EXCEPTIX_ENTRY_SIZE) {
         return None;
     }
-    let addresses = code
-        .chunks_exact(EXCEPTIX_ENTRY_SIZE)
+    let (entries, _) = code.as_chunks::<EXCEPTIX_ENTRY_SIZE>();
+    let addresses = entries
+        .iter()
         .map(|entry| u32::from_le_bytes(entry[0..4].try_into().unwrap()))
         .collect::<Vec<_>>();
     let mut order = (0..addresses.len()).collect::<Vec<_>>();

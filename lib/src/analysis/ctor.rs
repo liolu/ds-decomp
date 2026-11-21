@@ -74,11 +74,8 @@ impl CtorRange {
         // call runs the static initializer lists of the autoloads, which crt0 copied to a table in DTCM, and the
         // runner of the ARM9 .ctor (__call_static_initializers, in Thumb) comes just before it. So the calls are
         // tried from the last one: the first whose list is inside the ARM9 main module wins.
-        let calls: Vec<(u32, bool)> = entry_func
-            .function_calls()
-            .values()
-            .map(|call| (call.address, call.thumb))
-            .collect();
+        let calls: Vec<(u32, bool)> =
+            entry_func.function_calls().values().map(|call| (call.address, call.thumb)).collect();
         if calls.is_empty() {
             return NoEntryFunctionCallsSnafu.fail();
         }
@@ -167,7 +164,8 @@ impl CtorRange {
             ctor_start_data[3],
         ]);
 
-        if ctor_start < arm9.base_address() || ctor_start - arm9.base_address() >= code.len() as u32 {
+        if ctor_start < arm9.base_address() || ctor_start - arm9.base_address() >= code.len() as u32
+        {
             return CtorListOutsideArm9Snafu { address: ctor_start, runner: run_inits_addr }.fail();
         }
         let num_ctors = code[(ctor_start - arm9.base_address()) as usize..]

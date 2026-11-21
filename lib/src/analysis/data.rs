@@ -227,7 +227,9 @@ fn add_symbol_from_pointer(
             }
         }
         SectionKind::Data | SectionKind::Rodata => {
-            if section.name() == ".exceptix" && (pointer - section.start_address()) % 12 != 0 {
+            if section.name() == ".exceptix"
+                && !(pointer - section.start_address()).is_multiple_of(12)
+            {
                 // Not the start of an exception table entry, so not a pointer. The linker rebuilds that table and
                 // a symbol inside an entry would resolve to 0.
                 return Ok(());
