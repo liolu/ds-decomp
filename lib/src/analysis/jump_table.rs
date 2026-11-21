@@ -385,6 +385,17 @@ impl JumpTableStateThumb {
                         Argument::Reg(Reg { reg: src, .. }),
                         Argument::None,
                     ) if src == index => Self::SignedBaseline { index: dest, limit },
+                    // `add new_index, index, #0x0`: same as `mov` (MWCC Thumb)
+                    (
+                        "add",
+                        Argument::Reg(Reg { reg: dest, .. }),
+                        Argument::Reg(Reg { reg: src, .. }),
+                        Argument::UImm(0),
+                    ) if src == index => Self::SignedBaseline { index: dest, limit },
+                    // `sub index, #base` already set the flags: `bmi @skip`
+                    ("bmi", Argument::BranchDest(_), Argument::None, Argument::None) => {
+                        Self::AddRegReg { index, limit }
+                    }
                     (
                         "sub",
                         Argument::Reg(Reg { reg, .. }),

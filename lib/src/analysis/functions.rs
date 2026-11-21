@@ -285,6 +285,14 @@ impl Function {
                 let Some((address, ins, parsed_ins)) = parser.next() else {
                     break context.into_function(ParseFunctionState::Done)?;
                 };
+                // A known function never goes past its end, even when its last instruction is a tail call the
+                // analysis does not recognize (e.g. `b` to a function of the same module)
+                if let Some(known_end_address) = options.known_end_address
+                    && address >= known_end_address
+                {
+                    context.end_address = Some(known_end_address);
+                    break context.into_function(ParseFunctionState::Done)?;
+                }
                 let state = context.handle_ins(&mut parser, address, ins, parsed_ins);
                 if state.ended() {
                     break context.into_function(state)?;
