@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "ds-decomp"
-version = "0.12.1"
+version = "0.12.1-dsi.1"
 dependencies = [
  "bytemuck",
  "ds-rom",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "ds-decomp-cli"
-version = "0.12.1"
+version = "0.12.1-dsi.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -797,6 +797,7 @@ dependencies = [
 [[package]]
 name = "ds-rom"
 version = "0.8.0"
+source = "git+https://github.com/liolu/ds-rom?rev=b511970aa7cec83f52a8c55ddda130adc5a9cf3f#b511970aa7cec83f52a8c55ddda130adc5a9cf3f"
 dependencies = [
  "aes 0.9.3",
  "bitfield-struct",

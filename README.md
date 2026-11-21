@@ -1,6 +1,12 @@
 # ds-decomp
 Toolkit for decompiling DS games, `dsd` for short.
 
+> **This is a fork.** Branch `dsi-enhanced` = upstream [AetiasHax/ds-decomp](https://github.com/AetiasHax/ds-decomp)
+> plus support for DSi-enhanced (SDK 5) ROMs and some init/delink fixes, built against the `dsi-enhanced` branch
+> of [liolu/ds-rom](https://github.com/liolu/ds-rom). It is used by the games of
+> [All-nds-decomp-games](https://github.com/liolu/All-nds-decomp-games) whose `game.toml` says
+> `dsd = "dsi-enhanced"`. Binaries: the [releases](https://github.com/liolu/ds-decomp/releases) (`v<upstream>-dsi.<n>`).
+
 Join the discussion in the `#dsd` channel of our [Discord server](https://discord.gg/gwN6M3HQrA)!
 
 ## Contents

@@ -10,4 +10,6 @@ inherits = "release"
 lto = false
 
 [patch.crates-io]
-ds-rom = { path = "../ds-rom/lib" }
+# DSi-enhanced (SDK 5) ROMs: upstream ds-rom main (unreleased) + fixes, branch dsi-enhanced of the fork.
+# To work on ds-rom next to this repository, use a path instead: ds-rom = { path = "../ds-rom/lib" }
+ds-rom = { git = "https://github.com/liolu/ds-rom", rev = "b511970aa7cec83f52a8c55ddda130adc5a9cf3f" }
